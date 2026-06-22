@@ -7,6 +7,8 @@ first-class support for *interactive* (deferred) tools like "ask the user" and
 "choose a component". Extracted from a production Next.js + Vercel AI SDK app and
 generalized into framework-agnostic layers.
 
+📚 **[Documentation](https://docs-lemon-alpha.vercel.app/docs)** · 🧪 **[Full example](https://docs-lemon-alpha.vercel.app/docs/full-example)**
+
 ## Packages
 
 | Package | What it is | Deps |
