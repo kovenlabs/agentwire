@@ -120,3 +120,12 @@ pnpm typecheck
 
 Releases are automated with **semantic-release** (conventional commits) — pushing
 to `main` cuts the version, changelog, GitHub release, and npm publish via CI.
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) — setup, the monorepo layout, and the
+Conventional Commits convention the release pipeline depends on.
+
+## License
+
+[MIT](./LICENSE) © kovenlabs
