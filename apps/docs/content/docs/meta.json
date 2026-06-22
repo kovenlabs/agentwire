@@ -1,0 +1,17 @@
+{
+  "title": "agentwire",
+  "pages": [
+    "index",
+    "getting-started",
+    "full-example",
+    "concepts",
+    "---Packages---",
+    "core",
+    "tools",
+    "react",
+    "ai-sdk",
+    "---Guides---",
+    "interactive-tools",
+    "recipes"
+  ]
+}

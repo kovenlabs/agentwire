@@ -1,0 +1,48 @@
+{
+  "name": "@kovenlabs/agentwire-tools",
+  "version": "0.1.0",
+  "description": "Framework-agnostic defineTool factory and tool registry for agentwire.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist .turbo"
+  },
+  "dependencies": {
+    "@kovenlabs/agentwire": "workspace:*",
+    "@standard-schema/spec": "^1.0.0"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8",
+    "zod": "^3.24.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kovenlabs/agentwire.git",
+    "directory": "packages/tools"
+  },
+  "homepage": "https://github.com/kovenlabs/agentwire#readme",
+  "bugs": "https://github.com/kovenlabs/agentwire/issues"
+}

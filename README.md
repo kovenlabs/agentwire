@@ -11,10 +11,10 @@ generalized into framework-agnostic layers.
 
 | Package | What it is | Deps |
 | --- | --- | --- |
-| [`@ab/agentwire`](./packages/core) | The bus: `publish`/`subscribe`/`request`, typed channel registry, interactive-tool primitives, logger interfaces. | none |
-| [`@ab/agentwire-tools`](./packages/tools) | `defineTool` factory (`server`/`client`/`approval`/`interactive`) + tool registry. | Standard Schema |
-| [`@ab/agentwire-react`](./packages/react) | Generic React hooks: `useSubscribe`, `useRequest`, `useFormBridge`. | react |
-| [`@ab/agentwire-ai-sdk`](./packages/ai-sdk) | **The adapter.** `toAiTool`/`toAiToolSet` + the `useAgentChat` runtime. | `ai`, `@ai-sdk/react` |
+| [`@kovenlabs/agentwire`](./packages/core) | The bus: `publish`/`subscribe`/`request`, typed channel registry, interactive-tool primitives, logger interfaces. | none |
+| [`@kovenlabs/agentwire-tools`](./packages/tools) | `defineTool` factory (`server`/`client`/`approval`/`interactive`) + tool registry. | Standard Schema |
+| [`@kovenlabs/agentwire-react`](./packages/react) | Generic React hooks: `useSubscribe`, `useRequest`, `useFormBridge`. | react |
+| [`@kovenlabs/agentwire-ai-sdk`](./packages/ai-sdk) | **The adapter.** `toAiTool`/`toAiToolSet` + the `useAgentChat` runtime. | `ai`, `@ai-sdk/react` |
 
 The core is framework-agnostic. The AI SDK coupling lives entirely in the adapter
 package — swap in a different LLM SDK later by writing a sibling adapter without
@@ -23,7 +23,7 @@ touching anything else.
 ## The idea
 
 ```
-              @ab/agentwire (bus)
+              @kovenlabs/agentwire (bus)
     publish / subscribe / request — synchronous, in-memory
                      │
    ┌─────────────────┼──────────────────────┐
@@ -39,7 +39,7 @@ server tools     client tools          interactive tools
 
 ```ts
 // 1. Declare channels (your app owns these — the library ships none)
-import { defineChannels, chan } from "@ab/agentwire";
+import { defineChannels, chan } from "@kovenlabs/agentwire";
 
 export const events = defineChannels({
   templateRequest: chan<{ version: string }>("page:request-template"),
@@ -50,7 +50,7 @@ export const events = defineChannels({
 
 ```ts
 // 2. Declare tools once — server side
-import { defineTool } from "@ab/agentwire-tools";
+import { defineTool } from "@kovenlabs/agentwire-tools";
 import { z } from "zod";
 
 export const askUser = defineTool.interactive({
@@ -71,7 +71,7 @@ export const generateTemplate = defineTool.server({
 
 ```ts
 // 3. Server route — convert to AI SDK tools
-import { toAiToolSet } from "@ab/agentwire-ai-sdk";
+import { toAiToolSet } from "@kovenlabs/agentwire-ai-sdk";
 import { streamText } from "ai";
 
 const tools = toAiToolSet({ askUser, generateTemplate }, { logger });
@@ -80,7 +80,7 @@ streamText({ model, tools, /* … */ });
 
 ```tsx
 // 4. Client — wire the chat once
-import { useAgentChat } from "@ab/agentwire-ai-sdk/react";
+import { useAgentChat } from "@kovenlabs/agentwire-ai-sdk/react";
 
 const chat = useAgentChat({
   chatId,
@@ -97,17 +97,16 @@ const chat = useAgentChat({
 ```tsx
 // 5. Render the stream — <AgentMessages> mounts your interactive widgets,
 //    renders Approve/Deny for approval tools, and shows status → output.
-import { AgentMessages, resolveInteractive } from "@ab/agentwire-ai-sdk/react";
+import { AgentMessages, completeInteractive } from "@kovenlabs/agentwire-ai-sdk/react";
 
 <AgentMessages
   chat={chat}
   interactive={{ askUser: AskUserForm }}
-  approvalTools={["bookFlight"]}
   slots={{ text: (t) => <p>{t}</p> }}
 />;
 
 // inside AskUserForm — settle the call from the UI:
-resolveInteractive("askUser", toolCallId, { status: "completed", answers });
+completeInteractive("askUser", toolCallId, { answers });
 ```
 
 ## Develop
@@ -119,4 +118,5 @@ pnpm test       # vitest
 pnpm typecheck
 ```
 
-Releases are managed with Changesets; pushing to `main` publishes via CI.
+Releases are automated with **semantic-release** (conventional commits) — pushing
+to `main` cuts the version, changelog, GitHub release, and npm publish via CI.

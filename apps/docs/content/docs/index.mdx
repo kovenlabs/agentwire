@@ -1,0 +1,53 @@
+---
+title: Overview
+description: A typed pub/sub event bus that wires agent tools to your UI.
+---
+
+**agentwire** is a tiny, typed **publish/subscribe event bus** for connecting AI
+agent tools to your UI — with first-class support for *interactive* (deferred)
+tools like "ask the user a question" or "choose a component".
+
+It was extracted from a production Next.js + Vercel AI SDK app and generalized
+into framework-agnostic layers.
+
+## Why
+
+When an agent runs tools, three kinds of communication show up again and again:
+
+1. A **server tool** finishes and the UI needs to react (refresh a preview, show a result).
+2. The agent needs to **read or write client state** it can't reach from the server (a form).
+3. A tool needs to **pause and wait for the user** — render a form, collect an answer, then continue.
+
+agentwire models all three over one synchronous in-memory bus, so you stop
+hand-rolling event wiring in every project.
+
+```text
+                @kovenlabs/agentwire (bus)
+   publish / subscribe / request — synchronous, in-memory
+                      │
+   ┌──────────────────┼───────────────────────┐
+   ▼                  ▼                        ▼
+server tools      client tools           interactive tools
+(run server-side  (your handlers:        (defer to UI; the UI
+ → publish the    navigate, banners…)    publishes the result →
+ result)                                  runtime settles the call)
+```
+
+## Packages
+
+| Package | What it is | Depends on |
+| --- | --- | --- |
+| [`@kovenlabs/agentwire`](/docs/core) | The bus, typed channels, interactive primitives, logger seams. | nothing |
+| [`@kovenlabs/agentwire-tools`](/docs/tools) | `defineTool` factory + tool registry. | Standard Schema |
+| [`@kovenlabs/agentwire-react`](/docs/react) | `useSubscribe`, `useRequest`, `useFormBridge`. | react |
+| [`@kovenlabs/agentwire-ai-sdk`](/docs/ai-sdk) | The Vercel AI SDK adapter + `useAgentChat`. | `ai`, `@ai-sdk/react` |
+
+The core is framework-agnostic. The AI SDK coupling lives **only** in the adapter
+package, so you can target a different LLM SDK later by writing a sibling adapter
+without touching anything else.
+
+## Next steps
+
+- [Get started](/docs/getting-started) — install and wire an end-to-end flow in minutes.
+- [Concepts](/docs/concepts) — the bus, channels, and tool kinds explained.
+- [Interactive tools](/docs/interactive-tools) — the deferred ask/choose pattern in depth.

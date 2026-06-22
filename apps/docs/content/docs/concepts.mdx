@@ -1,0 +1,115 @@
+---
+title: Concepts
+description: The bus, channels, tool kinds, and how a tool call flows through them.
+---
+
+The running example throughout the docs is **Atlas**, a flight-booking assistant.
+See the [full example](/docs/full-example) for the complete build.
+
+## The bus
+
+At the center is a synchronous in-memory pub/sub bus. Handlers fire immediately,
+in registration order. There is no persistence and no cross-process delivery — it
+is a *same-runtime* bridge (a server-rendered tool result → client UI, or a form
+panel ↔ an agent tool, within the browser).
+
+```ts
+import { publish, subscribe } from "@kovenlabs/agentwire";
+
+const off = subscribe<number>("ping", (n) => console.log(n));
+publish("ping", 42); // logs 42
+off();
+```
+
+Because it's synchronous and in-memory, it's effectively free and trivially
+testable (`_resetForTesting()` clears all channels between tests).
+
+## Channels
+
+Raw string channels work, but typed **channel tokens** keep payloads honest:
+
+```ts
+import { chan, publishTo, subscribeTo } from "@kovenlabs/agentwire";
+
+const flightPicked = chan<{ flightId: string }>("flight:picked");
+
+subscribeTo(flightPicked, (p) => p.flightId); // p is { flightId: string }
+publishTo(flightPicked, { flightId: "BA123" }); // ✅
+publishTo(flightPicked, { flightId: 123 }); // ❌ type error
+```
+
+`defineChannels({...})` groups tokens into a registry — the typed replacement for
+a hand-maintained constants object. **The library ships no channels**; each app
+declares its own so they describe *that app's* domain.
+
+### Request / reply
+
+`request` (or typed `requestVia`) publishes on one channel and resolves with the
+first matching reply on another, timing out to `{ ok: false }`:
+
+```ts
+import { requestVia } from "@kovenlabs/agentwire";
+import { events } from "@/lib/events";
+
+const result = await requestVia(events.passengerRequest, events.passengerCurrent, {
+  formId: "passenger",
+}, { timeoutMs: 2000 });
+
+if (result.ok) {
+  // result.value.values — the passenger panel's current values
+}
+```
+
+This is how an agent tool reads client-only state (a form panel's current values)
+it can't reach from the server.
+
+## Tool kinds
+
+Tools are declared once with `defineTool.*`. The kind decides who settles the
+call:
+
+- **`server`** — runs `execute` on the server; the AI SDK returns the result to
+  the model. The runtime also publishes `tool:<name>:result` on the bus so the UI
+  can react. _(e.g. `searchFlights`)_
+- **`approval`** — a server tool gated behind an approve/deny step
+  (`needsApproval: true`), with a human-readable description shown on the card.
+  _(e.g. `bookFlight` — it charges a card)_
+- **`client`** — no `execute`; you resolve it in `useAgentChat`'s `toolHandlers`.
+  _(e.g. `navigate`, `showToast`)_
+- **`interactive`** — no `execute`; deferred to the UI. The call stays open until
+  your UI publishes a result on the resolve channel. _(e.g. `pickFlight`,
+  `collectPassenger`)_ See [Interactive tools](/docs/interactive-tools).
+
+Every `defineTool.*` call also registers the tool's **kind** and **display**
+(label/description) in a process-wide registry, so the chat runtime and your UI
+can look a tool up by name without importing its module.
+
+## How a tool call flows
+
+```text
+            ┌──────────── server ────────────┐   ┌──────────── client ───────────┐
+ model  →   │ streamText(tools)              │   │ useChat (via useAgentChat)     │
+            │                                │   │                                │
+ searchFlights│ toAiTool wraps execute → runs│ → │ part state "output-available"  │
+            │ result returned to the model   │   │ → publish tool:searchFlights…  │ → useSubscribe
+            │                                │   │                                │
+ navigate   │ (no execute)                   │ → │ onToolCall → your toolHandler  │ → addToolOutput
+            │                                │   │                                │
+ pickFlight │ (no execute)                   │ → │ call stays open                │
+            │                                │   │   gallery renders, user picks  │
+            │                                │   │   publishTo(resolveChannel)     │ → addToolOutput
+            └────────────────────────────────┘   └────────────────────────────────┘
+```
+
+## Decoupling seams
+
+The library never imports a concrete logger or form library. Instead it exposes
+small interfaces you implement (or accept the defaults for):
+
+- [`AgentLogger`](/docs/core#logging) / `AgentTelemetry` — `noopLogger`,
+  `consoleLogger`, and `noopTelemetry` are provided.
+- [`FormBridgeAdapter`](/docs/react#useformbridge) — a 2-method shim over
+  react-hook-form, Formik, or plain state.
+
+The LLM SDK seam is the whole `@kovenlabs/agentwire-ai-sdk` package — replace it to
+target a different SDK.

@@ -1,0 +1,23 @@
+{
+  "name": "@kovenlabs/agentwire-typetest",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@kovenlabs/agentwire": "workspace:*",
+    "@kovenlabs/agentwire-ai-sdk": "workspace:*",
+    "@kovenlabs/agentwire-react": "workspace:*",
+    "@kovenlabs/agentwire-tools": "workspace:*"
+  },
+  "devDependencies": {
+    "@ai-sdk/react": "^3.0.0",
+    "@types/react": "^19.0.1",
+    "ai": "^6.0.0",
+    "react": "^19.0.0",
+    "typescript": "^5.7.2",
+    "zod": "^3.24.1"
+  }
+}

@@ -1,0 +1,260 @@
+---
+title: "@kovenlabs/agentwire-ai-sdk"
+description: The Vercel AI SDK adapter — tool conversion and the useAgentChat runtime.
+---
+
+```bash
+pnpm add @kovenlabs/agentwire-ai-sdk
+```
+
+Peer dependencies: `ai` (^5 || ^6), `@ai-sdk/react` (^2 || ^3, client only),
+`react`. This is the **only** package that imports the AI SDK — swap it to target
+a different SDK.
+
+Two entry points:
+
+- `@kovenlabs/agentwire-ai-sdk` — server-safe (`toAiTool`, `toAiToolSet`), no React.
+- `@kovenlabs/agentwire-ai-sdk/react` — the client hooks + renderer.
+
+## Exports
+
+### `@kovenlabs/agentwire-ai-sdk` (server-safe)
+
+| Export | Kind | Summary |
+| --- | --- | --- |
+| [`toAiTool`](#toaitool--toaitoolset) | fn | one `AgentToolDefinition` → AI SDK `Tool` |
+| [`toAiToolSet`](#toaitool--toaitoolset) | fn | a record of definitions → `ToolSet` |
+| [`ToAiToolOptions`](#toaitool--toaitoolset) | type | `{ logger? }` |
+| [`AgentToolContext`](#toaitool--toaitoolset) | type | `{ userId?, chatId?, agent? }` from `experimental_context` |
+
+### `@kovenlabs/agentwire-ai-sdk/react`
+
+| Export | Kind | Summary |
+| --- | --- | --- |
+| [`useAgentChat`](#useagentchat) | hook | the chat runtime over `useChat` |
+| [`UseAgentChatOptions`](#options) | type | `useAgentChat` options |
+| [`ToolHandler`](#options) | type | `(call, addToolOutput) => void` for client tools |
+| [`AddToolOutput`](#options) / [`AddToolOutputArgs`](#options) | type | the settle callback + its args |
+| [`INTERACTIVE_RESOLVE_CHANNEL`](#settling-an-interactive-call) | const | default resolve channel |
+| [`completeInteractive`](#settling-an-interactive-call) | fn | settle as completed |
+| [`interruptInteractive`](#settling-an-interactive-call) | fn | settle as interrupted |
+| [`resolveInteractive`](#settling-an-interactive-call) | fn | settle with a raw output |
+| [`InterruptOptions`](#settling-an-interactive-call) | type | `{ reason?, channel? }` |
+| [`useInteractiveResult`](#consuming-a-resolution-off-chat--useinteractiveresult) | hook | observe one tool's resolutions |
+| [`useInteractiveResultState`](#state-variants) | hook | …returning the latest as state |
+| [`UseInteractiveResultOptions`](#consuming-a-resolution-off-chat--useinteractiveresult) | type | `{ includeInterrupts?, channel? }` |
+| [`useToolResult`](#consuming-a-server-tools-result--usetoolresult) | hook | observe a server tool's result |
+| [`useToolResultState`](#state-variants) | hook | …returning the latest as state |
+| [`AgentMessages`](#rendering--agentmessages) | component | render the message list |
+| [`renderMessageParts`](#rendermessageparts) | fn | render one message's parts |
+| [`AgentMessagesProps`](#rendering--agentmessages) | type | `<AgentMessages>` props |
+| [`RenderPartsOptions`](#rendermessageparts) | type | `renderMessageParts` options |
+| [`ToolPartSlots`](#rendering--agentmessages) | type | per-part render overrides |
+| [`InteractiveRegistry`](#rendering--agentmessages) | type | `Record<toolName, Widget>` |
+| [`ToolWidgetProps`](#rendering--agentmessages) | type | `{ toolCallId, input }` a widget receives |
+| [`ApprovalResponder`](#rendering--agentmessages) | type | `addToolApprovalResponse` shape |
+
+## `toAiTool` / `toAiToolSet`
+
+Convert neutral [`AgentToolDefinition`](/docs/tools#the-definition-shape)s into
+Vercel AI SDK `Tool`s. `server`/`approval` tools get their `execute` wrapped with
+start/finish/fail logging; `approval` tools carry `needsApproval`. `client`/
+`interactive` tools are emitted without `execute`.
+
+```ts title="app/api/agent/chat/route.ts"
+import { toAiToolSet } from "@kovenlabs/agentwire-ai-sdk";
+import { consoleLogger } from "@kovenlabs/agentwire";
+import { streamText } from "ai";
+import { tools } from "@/lib/tools";
+
+const result = streamText({
+  model,
+  messages,
+  tools: toAiToolSet(tools, { logger: consoleLogger }),
+  experimental_context: { chatId, agent, userId },
+});
+```
+
+`toAiToolSet(defs, options?)` maps a whole record; `toAiTool(def, options?)`
+converts a single definition. `options` is `ToAiToolOptions` (`{ logger? }`,
+defaulting to `noopLogger`). The logger receives `AgentToolContext` (`userId`,
+`chatId`, `agent`, read from `experimental_context`) on every tool log line, so
+executions are correlated.
+
+## `useAgentChat`
+
+The client runtime. Wraps the AI SDK's `useChat` and wires it to the bus:
+
+- settles **interactive** tool calls from a single bus channel, deduped by
+  `toolCallId` (works for live *and* history-loaded calls);
+- dispatches **client** tools to your `toolHandlers`;
+- publishes `tool:<name>:result` when **server** tools complete (seeded on load so
+  already-settled history calls don't re-fire side effects);
+- suppresses auto-continuation after **terminal** tools.
+
+It returns the standard `useChat` object (`messages`, `sendMessage`, `status`, …).
+
+```tsx title="components/chat.tsx"
+"use client";
+
+import { useAgentChat } from "@kovenlabs/agentwire-ai-sdk/react";
+
+const chat = useAgentChat({
+  chatId,
+  agent: "atlas",
+  toolHandlers: {
+    navigate: (call, addToolOutput) => {
+      router.push((call.input as { to: string }).to);
+      addToolOutput({ tool: "navigate", toolCallId: call.toolCallId, output: { ok: true } });
+    },
+  },
+  terminalTools: ["suggestFollowUps"],
+});
+```
+
+### Options
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `chatId` | — | Chat id; also the `useChat` id. |
+| `agent` | `"orchestrator"` | Sent in the request body. |
+| `api` | `"/api/agent/chat"` | Chat endpoint. |
+| `initialMessages` | — | History to hydrate. |
+| `toolHandlers` | — | `Record<name, (call, addToolOutput) => void>` for client tools. |
+| `interactiveTools` | registry's interactive tools | Names settled via the bus. |
+| `resolveChannel` | `INTERACTIVE_RESOLVE_CHANNEL` | Channel the UI publishes results/interrupts on. |
+| `terminalTools` | `[]` | Tools that end the turn (no auto-continue after). |
+| `publishServerToolResults` | `true` | Publish `tool:<name>:result` on completion. |
+| `onDanglingToolCalls` | — | Sanitize history-loaded messages (e.g. close stuck calls). |
+| `logger` / `telemetry` | no-op | Injected logging/telemetry. |
+
+Each `toolHandlers` entry is a `ToolHandler`:
+`(call: { toolName, toolCallId, input }, addToolOutput: AddToolOutput) => void`,
+where `AddToolOutput` takes `AddToolOutputArgs` (`{ tool, toolCallId, output }`).
+
+### Settling an interactive call
+
+Use the helpers — they publish the right payload on the resolve channel and the
+runtime forwards it to `addToolOutput`.
+
+```tsx
+import { completeInteractive, interruptInteractive } from "@kovenlabs/agentwire-ai-sdk/react";
+
+// the traveler picked a flight → builds { status: "completed", flightId }
+completeInteractive("pickFlight", toolCallId, { flightId });
+
+// the traveler bailed out to chat → builds { status: "interrupted", reason, tool }
+interruptInteractive("pickFlight", toolCallId);
+```
+
+`completeInteractive(tool, toolCallId, data?, channel?)` and
+`interruptInteractive(tool, toolCallId, extra?, { reason?, channel? })` assemble
+the completed / interrupted output shapes. For a custom output shape, drop to
+`resolveInteractive(tool, toolCallId, output, channel?)`, which passes `output`
+through verbatim. All default to `INTERACTIVE_RESOLVE_CHANNEL`.
+
+### Consuming a resolution off-chat — `useInteractiveResult`
+
+Any component (a side panel, a map) can react to one interactive tool's
+resolutions without touching the chat. The hook filters by tool name, skips
+interrupts by default, and hands you the typed output — no manual
+`payload.tool === name` check.
+
+```tsx
+import { useInteractiveResult } from "@kovenlabs/agentwire-ai-sdk/react";
+
+useInteractiveResult<{ flightId: string; price: number }>("pickFlight", (flight) => {
+  setSelected(flight); // fires from anywhere, whenever the traveler picks
+});
+```
+
+| Arg / option | Purpose |
+| --- | --- |
+| `toolName` | only this tool's resolutions fire the handler. |
+| `handler(output, payload)` | `output` is typed by the type arg; `payload` is the raw `{ tool, toolCallId, output }`. |
+| `includeInterrupts` | also fire for interrupted resolutions (default `false`). |
+| `channel` | resolve channel to listen on (default `INTERACTIVE_RESOLVE_CHANNEL`). |
+
+### Consuming a server tool's result — `useToolResult`
+
+The counterpart for `server`/`approval` tools, which auto-publish on
+`tool:<name>:result`. It hides that channel convention and the cast.
+
+```tsx
+import { useToolResult } from "@kovenlabs/agentwire-ai-sdk/react";
+
+useToolResult<Flight[]>("searchFlights", (flights) => setFlights(flights));
+```
+
+Both hooks are thin adapters over [`useSubscribe`](/docs/react#usesubscribe) — the
+subscription mechanism lives in one place; these just add the filter and types.
+
+### State variants
+
+When you only need the latest value, `useInteractiveResultState` /
+`useToolResultState` return it directly (`T | null`) and skip the `useState`
+plumbing. Same arguments as the callback hooks, minus the handler.
+
+```tsx
+const flights = useToolResultState<Flight[]>("searchFlights"); // Flight[] | null
+const picked = useInteractiveResultState<{ flightId: string }>("pickFlight");
+```
+
+## Rendering — `<AgentMessages>`
+
+A headless renderer that turns `chat.messages` into UI: it mounts your interactive
+widgets from a registry, renders Approve/Deny for approval tools, and shows a
+status-then-output progression for the rest. See it in the
+[full example](/docs/full-example#5-render-the-conversation-with-agentmessages).
+
+```tsx
+import { AgentMessages } from "@kovenlabs/agentwire-ai-sdk/react";
+
+<AgentMessages
+  chat={chat}
+  interactive={{ pickFlight: FlightGallery, collectPassenger: PassengerForm }}
+  slots={{ text: (t) => <p>{t}</p> }}
+/>;
+```
+
+| Prop | Purpose |
+| --- | --- |
+| `chat` | the `useAgentChat` result (needs `messages`; uses `addToolApprovalResponse` for approvals). |
+| `interactive` | `Record<toolName, Widget>` — mounted at the `input-available` state with `{ toolCallId, input }`. |
+| `slots` | optional overrides: `text`, `status`, `output`, `error`, `approval`. |
+| `renderMessage` | wrap each message (defaults to a `<div>`). |
+
+Approval tools (`defineTool.approval`) are auto-detected from the AI SDK's
+`approval-requested` state and answered with `chat.addToolApprovalResponse`
+(`ApprovalResponder`) — no prop needed.
+
+**Render types:** `AgentMessagesProps` (the props above), `InteractiveRegistry`
+(`Record<toolName, ComponentType<ToolWidgetProps>>`), `ToolWidgetProps`
+(`{ toolCallId, input }`), `ToolPartSlots` (the `slots` overrides:
+`text`/`status`/`output`/`error`/`approval`), and `ApprovalResponder`.
+
+### `renderMessageParts`
+
+The headless function `<AgentMessages>` is built on — `renderMessageParts(message,
+options)` returns the rendered parts for one `UIMessage`. Use it directly for a
+fully custom message layout. `options` is `RenderPartsOptions`:
+
+| Option | Purpose |
+| --- | --- |
+| `interactive` | `InteractiveRegistry` — widgets mounted at `input-available`. |
+| `addToolApprovalResponse` | answers approval tools (pass `chat.addToolApprovalResponse`). |
+| `slots` | the `ToolPartSlots` render overrides. |
+
+```tsx
+import { renderMessageParts } from "@kovenlabs/agentwire-ai-sdk/react";
+
+chat.messages.map((m) => (
+  <div key={m.id}>{renderMessageParts(m, { interactive, addToolApprovalResponse: chat.addToolApprovalResponse, slots })}</div>
+));
+```
+
+## Version compatibility
+
+`useAgentChat` accesses `ai`'s approval-completion helper defensively, so it works
+on both `ai@5` (no approval auto-continue) and `ai@6` (approval responses
+auto-continue). No code change needed across the two.

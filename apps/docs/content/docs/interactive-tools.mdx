@@ -1,0 +1,116 @@
+---
+title: Interactive Tools
+description: The deferred ask/choose pattern — render UI, wait for the user, then continue.
+---
+
+Interactive tools are the heart of agentwire. They let an agent **pause**, hand
+control to the UI, and resume once the user has acted — without you hand-wiring
+promises through React state. In the [flight assistant](/docs/full-example),
+`pickFlight` and `collectPassenger` are interactive.
+
+## The lifecycle
+
+1. The model calls an interactive tool (e.g. `pickFlight`). It has **no `execute`**.
+2. `useAgentChat`'s `onToolCall` sees it's interactive and **leaves the call open**.
+3. Your UI renders from the tool's input (the flight options, the form fields…).
+4. The user acts. You `publishTo` the **resolve channel** with `{ tool, toolCallId, output }`.
+5. The runtime dedupes by `toolCallId` and calls `addToolOutput` — the model
+   continues with your output.
+
+Because resolution is keyed on `toolCallId` over the bus, it works the same for a
+**live** call and one **loaded from history** (the traveler reopened the chat).
+
+## Define one
+
+```ts
+import { defineTool } from "@kovenlabs/agentwire-tools";
+import { z } from "zod";
+
+export const pickFlight = defineTool.interactive({
+  name: "pickFlight",
+  description: "Show the traveler the flights and let them choose one.",
+  label: "Choosing a flight",
+  inputSchema: z.object({
+    options: z.array(z.object({ id: z.string(), airline: z.string(), price: z.number() })),
+  }),
+});
+```
+
+## Render + resolve
+
+```tsx
+"use client";
+
+import { completeInteractive } from "@kovenlabs/agentwire-ai-sdk/react";
+
+export function FlightGallery({
+  toolCallId,
+  options,
+}: {
+  toolCallId: string;
+  options: Array<{ id: string; airline: string; price: number }>;
+}) {
+  function pick(flightId: string) {
+    completeInteractive("pickFlight", toolCallId, { flightId });
+  }
+
+  return (
+    <div>
+      {options.map((f) => (
+        <button key={f.id} onClick={() => pick(f.id)}>
+          {f.airline} — ${f.price}
+        </button>
+      ))}
+    </div>
+  );
+}
+```
+
+Mount it from the stream by listing it in `<AgentMessages>`'s `interactive` map —
+see the [full example](/docs/full-example#5-render-the-conversation-with-agentmessages).
+
+## Interrupts — "ask about this instead"
+
+Sometimes the traveler doesn't want to pick — they want to ask a question ("is the
+red-eye cheaper?"). Settle the call with an **interrupted** output so the model
+knows to pivot to chat rather than treating it as a choice.
+
+```tsx
+import { interruptInteractive } from "@kovenlabs/agentwire-ai-sdk/react";
+
+function askInstead(toolCallId: string) {
+  // builds { status: "interrupted", reason: CHAT_ABOUT_THIS_REASON, tool: "pickFlight" }
+  interruptInteractive("pickFlight", toolCallId);
+}
+```
+
+Discriminate with the guards (in your renderer or wherever you inspect outputs):
+
+```ts
+import { isInterruptedOutput, isCompletedOutput, CHAT_ABOUT_THIS_REASON } from "@kovenlabs/agentwire";
+
+if (isInterruptedOutput(output, CHAT_ABOUT_THIS_REASON)) {
+  // traveler pivoted to chat
+} else if (isCompletedOutput(output)) {
+  // traveler picked a flight
+}
+```
+
+## Dedup & idempotency
+
+The runtime keeps a `Set` of resolved `toolCallId`s, so double-taps (or a result
+*and* an interrupt racing) settle the call exactly once. You don't need to guard
+against double clicks yourself.
+
+## Custom resolve channels
+
+By default everything flows through `INTERACTIVE_RESOLVE_CHANNEL`. If you prefer a
+dedicated channel (e.g. to scope a sub-surface), pass `resolveChannel` to
+`useAgentChat` and publish to that same token.
+
+```ts
+import { chan } from "@kovenlabs/agentwire";
+import type { InteractiveResolvePayload } from "@kovenlabs/agentwire";
+
+export const galleryResolve = chan<InteractiveResolvePayload>("gallery:resolve");
+```

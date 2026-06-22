@@ -1,0 +1,36 @@
+{
+  "name": "@kovenlabs/agentwire-example-atlas",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf .next .turbo"
+  },
+  "dependencies": {
+    "@kovenlabs/agentwire": "workspace:*",
+    "@kovenlabs/agentwire-ai-sdk": "workspace:*",
+    "@kovenlabs/agentwire-react": "workspace:*",
+    "@kovenlabs/agentwire-tools": "workspace:*",
+    "@ai-sdk/anthropic": "^3.0.0",
+    "@ai-sdk/react": "^3.0.0",
+    "ai": "^6.0.0",
+    "next": "^15.2.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "sonner": "^2.0.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.0.0",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.1",
+    "@types/react-dom": "^19.0.2",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.7.2"
+  }
+}

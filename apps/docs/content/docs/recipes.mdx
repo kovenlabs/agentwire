@@ -1,0 +1,147 @@
+---
+title: Recipes
+description: Common patterns — form bridge, server-result UI refresh, approvals, testing.
+---
+
+These build on the [flight assistant](/docs/full-example).
+
+## Read & write a form from the agent
+
+Give the agent `getPassenger` / `updatePassenger` `client` tools, then bridge them
+to your form panel with [`useFormBridge`](/docs/react#useformbridge).
+
+```ts title="lib/tools.ts"
+export const getPassenger = defineTool.client({
+  name: "getPassenger",
+  description: "Read the current passenger panel values.",
+  label: "Reading passenger",
+  inputSchema: z.object({ formId: z.string() }),
+});
+
+export const updatePassenger = defineTool.client({
+  name: "updatePassenger",
+  description: "Set one field in the passenger panel.",
+  label: "Updating passenger",
+  inputSchema: z.object({ formId: z.string(), path: z.string(), value: z.string() }),
+});
+```
+
+Resolve `getPassenger` in `toolHandlers` by requesting the panel's values over the
+bus, and `updatePassenger` by publishing an update:
+
+```tsx
+import { requestVia, publishTo } from "@kovenlabs/agentwire";
+import { events } from "@/lib/events";
+
+toolHandlers: {
+  getPassenger: async (call, addToolOutput) => {
+    const r = await requestVia(events.passengerRequest, events.passengerCurrent, {
+      formId: "passenger",
+    });
+    addToolOutput({
+      tool: "getPassenger",
+      toolCallId: call.toolCallId,
+      output: r.ok ? r.value.values : { error: "panel not open" },
+    });
+  },
+  updatePassenger: (call, addToolOutput) => {
+    const { path, value } = call.input as { path: string; value: string };
+    publishTo(events.passengerUpdate, { formId: "passenger", path, value });
+    addToolOutput({ tool: "updatePassenger", toolCallId: call.toolCallId, output: { ok: true } });
+  },
+}
+```
+
+## Drive an off-chat component from agent activity
+
+A component anywhere in the tree can reflect what the agent does, without
+touching `chat.messages` — it just listens on the bus.
+
+```tsx
+import { useInteractiveResult, useToolResult } from "@kovenlabs/agentwire-ai-sdk/react";
+
+function TripPanel() {
+  // server tools auto-publish their result on `tool:<name>:result`
+  useToolResult<Flight[]>("searchFlights", setFlights);
+  useToolResult<Booking>("bookFlight", setBooking);
+
+  // interactive picks — filtered by tool name, interrupts skipped, typed
+  useInteractiveResult<{ flightId: string; price: number }>("pickFlight", setSelected);
+
+  return /* … a panel that updates itself as the agent works … */;
+}
+```
+
+Both hooks are thin adapters over `useSubscribe` — `useToolResult` hides the
+`tool:<name>:result` channel convention; `useInteractiveResult` filters the
+resolve channel by tool name. Reach for `useSubscribe` directly only for channels
+you declared yourself.
+
+This is the out-of-chat consumer pattern: the chat renderer and the panel share
+nothing but the bus.
+
+## Gate a costly tool behind approval
+
+```ts
+export const bookFlight = defineTool.approval({
+  name: "bookFlight",
+  description: "Book the selected flight and charge the traveler's card.",
+  approvalDescription: "This charges your card and books the flight. Refunds may incur a fee.",
+  label: "Booking flight",
+  inputSchema: z.object({ flightId: z.string(), passengerId: z.string() }),
+  execute: ({ flightId, passengerId }) => bookingApi.book(flightId, passengerId),
+});
+```
+
+The AI SDK renders the approve/deny UI from `needsApproval`; on `ai@6`,
+`useAgentChat` auto-continues once the traveler approves. Show your
+`approvalDescription` on the card via `getToolDisplay("bookFlight").description`.
+
+## Close dangling tool calls on load
+
+If a tab closed mid-run, a history-loaded tool call can render as "running…"
+forever. Sanitize on load:
+
+```tsx
+useAgentChat({
+  chatId,
+  initialMessages,
+  onDanglingToolCalls: (messages) => closeUnsettledCalls(messages),
+});
+```
+
+## Test bus interactions
+
+The bus is synchronous and resettable, so tests need no mocks or fake timers
+(except for timeouts).
+
+```ts
+import { afterEach, expect, it } from "vitest";
+import { _resetForTesting, publishTo, subscribeTo, chan } from "@kovenlabs/agentwire";
+
+afterEach(() => _resetForTesting());
+
+it("delivers the picked flight", () => {
+  const picked = chan<{ flightId: string }>("flight:picked");
+  let seen = "";
+  subscribeTo(picked, (p) => (seen = p.flightId));
+  publishTo(picked, { flightId: "BA123" });
+  expect(seen).toBe("BA123");
+});
+```
+
+## Use a non-Zod validator
+
+Any [Standard Schema](https://standardschema.dev) validator works:
+
+```ts
+import * as v from "valibot";
+
+export const getWeather = defineTool.server({
+  name: "getWeather",
+  description: "Weather at the destination on the travel date.",
+  label: "Checking weather",
+  inputSchema: v.object({ city: v.string(), date: v.string() }),
+  execute: ({ city, date }) => weatherApi.forecast(city, date),
+});
+```

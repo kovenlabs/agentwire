@@ -1,0 +1,449 @@
+---
+title: Full Example — Flight Booking Assistant
+description: Build a complete agent that searches flights, asks the traveler questions, lets them pick, and books with an approval step — using every tool kind.
+---
+
+We'll build **Atlas**, a flight-booking assistant, and use it to exercise every
+part of agentwire. By the end you'll have an agent that can:
+
+1. **search flights** — a `server` tool that calls an API,
+2. **let the traveler pick one** — an `interactive` gallery,
+3. **collect passenger details** — an `interactive` form, kept in sync with a real form via the **form bridge**,
+4. **book and charge** — an `approval` tool,
+5. **navigate & toast** — `client` tools,
+
+…all wired over the bus. Here's the whole flow:
+
+```text
+user: "Find me a flight from Lisbon to Tokyo on Dec 3"
+  → searchFlights (server)        → returns 6 flights
+  → pickFlight (interactive)      → UI shows a gallery; traveler taps one
+  → collectPassenger (interactive)→ UI shows a form; traveler fills it
+  → bookFlight (approval)         → Approve/Deny card; traveler approves
+  → showToast (client)            → "Booked! ✈️"  + navigate("/trips")
+```
+
+## Install
+
+```bash
+pnpm add @kovenlabs/agentwire @kovenlabs/agentwire-tools @kovenlabs/agentwire-react @kovenlabs/agentwire-ai-sdk ai @ai-sdk/react zod
+```
+
+## 1. Channels
+
+Channels are your app's typed event names. We need three for the passenger form
+bridge (everything else flows over the built-in interactive + tool-result
+channels).
+
+```ts title="lib/events.ts"
+import { chan, defineChannels } from "@kovenlabs/agentwire";
+
+export interface PassengerValues {
+  fullName: string;
+  passport: string;
+  email: string;
+}
+
+export const events = defineChannels({
+  passengerRequest: chan<{ formId: string }>("passenger:request"),
+  passengerCurrent: chan<{ formId: string; values: PassengerValues }>("passenger:current"),
+  passengerUpdate: chan<{ formId: string; path: string; value: unknown }>("passenger:update"),
+});
+```
+
+## 2. Tools — one of every kind
+
+```ts title="lib/tools.ts"
+import { defineTool } from "@kovenlabs/agentwire-tools";
+import { z } from "zod";
+import { flightsApi, bookingApi } from "@/lib/api";
+
+// ── server: runs on the server, result returned to the model ──────────
+export const searchFlights = defineTool.server({
+  name: "searchFlights",
+  description: "Search available flights between two cities on a date.",
+  label: "Searching flights",
+  inputSchema: z.object({
+    from: z.string().describe("Origin city or IATA code"),
+    to: z.string().describe("Destination city or IATA code"),
+    date: z.string().describe("Departure date, YYYY-MM-DD"),
+  }),
+  execute: async ({ from, to, date }) => flightsApi.search({ from, to, date }),
+});
+
+// ── interactive: a gallery the traveler picks from ────────────────────
+export const pickFlight = defineTool.interactive({
+  name: "pickFlight",
+  description: "Show the traveler the flights and let them choose one.",
+  label: "Choosing a flight",
+  inputSchema: z.object({
+    options: z.array(
+      z.object({
+        id: z.string(),
+        airline: z.string(),
+        price: z.number(),
+        depart: z.string(),
+      }),
+    ),
+  }),
+});
+
+// ── interactive: a form the traveler fills in ─────────────────────────
+export const collectPassenger = defineTool.interactive({
+  name: "collectPassenger",
+  description: "Ask the traveler for the passenger details needed to book.",
+  label: "Collecting passenger details",
+  inputSchema: z.object({
+    fields: z.array(z.object({ id: z.string(), question: z.string() })),
+  }),
+});
+
+// ── approval: charges money, so it needs a yes ────────────────────────
+export const bookFlight = defineTool.approval({
+  name: "bookFlight",
+  description: "Book the selected flight and charge the traveler's card.",
+  approvalDescription: "This charges your card and books the flight. Refunds may incur a fee.",
+  label: "Booking flight",
+  inputSchema: z.object({ flightId: z.string(), passengerId: z.string() }),
+  execute: async ({ flightId, passengerId }) => bookingApi.book(flightId, passengerId),
+});
+
+// ── client: UI side-effects you resolve yourself ──────────────────────
+export const showToast = defineTool.client({
+  name: "showToast",
+  description: "Show the traveler a short status message.",
+  label: "Notifying",
+  inputSchema: z.object({ message: z.string() }),
+});
+
+export const navigate = defineTool.client({
+  name: "navigate",
+  description: "Navigate the traveler to a screen, e.g. /trips.",
+  label: "Navigating",
+  inputSchema: z.object({ to: z.string() }),
+});
+
+export const tools = {
+  searchFlights,
+  pickFlight,
+  collectPassenger,
+  bookFlight,
+  showToast,
+  navigate,
+};
+```
+
+## 3. The server route
+
+Convert the tools and hand them to `streamText`. The system prompt teaches Atlas
+the flow.
+
+```ts title="app/api/agent/chat/route.ts"
+import { consoleLogger } from "@kovenlabs/agentwire";
+import { toAiToolSet } from "@kovenlabs/agentwire-ai-sdk";
+import { openai } from "@ai-sdk/openai";
+import { convertToModelMessages, streamText } from "ai";
+import { tools } from "@/lib/tools";
+
+const SYSTEM = `You are Atlas, a flight-booking assistant.
+Flow: searchFlights → pickFlight → collectPassenger → bookFlight.
+Never call bookFlight until you have a chosen flight id and passenger details.`;
+
+export async function POST(req: Request) {
+  const { messages, chatId } = await req.json();
+
+  const result = streamText({
+    model: openai("gpt-5"),
+    system: SYSTEM,
+    messages: convertToModelMessages(messages),
+    tools: toAiToolSet(tools, { logger: consoleLogger }),
+    experimental_context: { chatId, agent: "atlas" },
+  });
+
+  return result.toUIMessageStreamResponse();
+}
+```
+
+## 4. The interactive UI components
+
+These render from a tool call's **input** and settle it with two helpers:
+`resolveInteractive` (the traveler acted) and `interruptInteractive` (they bailed
+out to chat). No bus payloads to hand-assemble.
+
+```tsx title="components/flight-gallery.tsx"
+"use client";
+
+import { completeInteractive, interruptInteractive } from "@kovenlabs/agentwire-ai-sdk/react";
+
+type FlightOption = { id: string; airline: string; price: number; depart: string };
+
+// Renders for the `pickFlight` interactive tool.
+export function FlightGallery({
+  toolCallId,
+  input,
+}: {
+  toolCallId: string;
+  input: { options: FlightOption[] };
+}) {
+  const choose = (flightId: string) =>
+    completeInteractive("pickFlight", toolCallId, { flightId });
+
+  const askInstead = () => interruptInteractive("pickFlight", toolCallId);
+
+  return (
+    <div className="grid gap-2">
+      {input.options.map((f) => (
+        <button key={f.id} onClick={() => choose(f.id)} className="rounded border p-3 text-left">
+          <b>{f.airline}</b> — ${f.price} · departs {f.depart}
+        </button>
+      ))}
+      <button onClick={askInstead}>None of these — let me ask something</button>
+    </div>
+  );
+}
+```
+
+```tsx title="components/passenger-form.tsx"
+"use client";
+
+import { completeInteractive } from "@kovenlabs/agentwire-ai-sdk/react";
+import { useState } from "react";
+
+type Field = { id: string; question: string };
+
+// Renders for the `collectPassenger` interactive tool.
+export function PassengerForm({
+  toolCallId,
+  input,
+}: {
+  toolCallId: string;
+  input: { fields: Field[] };
+}) {
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+
+  const submit = () =>
+    completeInteractive("collectPassenger", toolCallId, {
+      answers: input.fields.map((f) => ({ id: f.id, answer: answers[f.id] ?? "" })),
+    });
+
+  return (
+    <form onSubmit={(e) => (e.preventDefault(), submit())}>
+      {input.fields.map((f) => (
+        <label key={f.id}>
+          {f.question}
+          <input onChange={(e) => setAnswers((a) => ({ ...a, [f.id]: e.target.value }))} />
+        </label>
+      ))}
+      <button type="submit">Continue</button>
+    </form>
+  );
+}
+```
+
+## 5. Render the conversation with `<AgentMessages>`
+
+You don't hand-write the part loop. `<AgentMessages>` walks the stream, mounts
+your interactive widgets from a registry, renders Approve/Deny for approval tools,
+and shows a status line (from each tool's registered `label`) → output for the
+rest. You supply a registry and optional render **slots**.
+
+```tsx title="components/atlas.tsx"
+"use client";
+
+import { AgentMessages, useAgentChat } from "@kovenlabs/agentwire-ai-sdk/react";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+import { toast } from "sonner";
+import { FlightGallery } from "./flight-gallery";
+import { PassengerForm } from "./passenger-form";
+
+// One row per interactive tool — the only thing you edit when adding one.
+const INTERACTIVE = {
+  pickFlight: FlightGallery,
+  collectPassenger: PassengerForm,
+};
+
+export function Atlas({ chatId }: { chatId: string }) {
+  const router = useRouter();
+  const [input, setInput] = useState("");
+
+  const chat = useAgentChat({
+    chatId,
+    agent: "atlas",
+    // pickFlight & collectPassenger are auto-detected from the registry.
+    toolHandlers: {
+      showToast: (call, addToolOutput) => {
+        toast((call.input as { message: string }).message);
+        addToolOutput({ tool: "showToast", toolCallId: call.toolCallId, output: { shown: true } });
+      },
+      navigate: (call, addToolOutput) => {
+        router.push((call.input as { to: string }).to);
+        addToolOutput({ tool: "navigate", toolCallId: call.toolCallId, output: { ok: true } });
+      },
+    },
+  });
+
+  return (
+    <div>
+      <AgentMessages
+        chat={chat}
+        interactive={INTERACTIVE}
+        renderMessage={(m, parts) => (
+          <div>
+            <b>{m.role === "user" ? "You" : "Atlas"}</b>
+            {parts}
+          </div>
+        )}
+        slots={{
+          text: (t) => <p>{t}</p>,
+          output: ({ toolName, output }) =>
+            toolName === "searchFlights" ? (
+              <span>Found {(output as unknown[]).length} flights.</span>
+            ) : null,
+        }}
+      />
+
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!input.trim()) return;
+          chat.sendMessage({ text: input });
+          setInput("");
+        }}
+      >
+        <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Where to?" />
+        <button type="submit">Send</button>
+      </form>
+    </div>
+  );
+}
+```
+
+That's the **entire** client. Adding a new interactive tool is two steps —
+`defineTool.interactive(...)` and one row in `INTERACTIVE`. `<AgentMessages>`
+never changes.
+
+### What `<AgentMessages>` handles for you
+
+| Part | Behavior |
+| --- | --- |
+| text | `slots.text` (defaults to raw text) |
+| interactive tool (`input-available`) | mounts `interactive[name]` with `{ toolCallId, input }` |
+| approval tool (`approval-requested`) | auto-detected Approve/Deny card → `addToolApprovalResponse` (override with `slots.approval`) |
+| any tool running | `slots.status` → defaults to `"<label>…"` from the registry |
+| tool output / error | `slots.output` / `slots.error` |
+
+Need a custom layout? Drop to `renderMessageParts(message, options)` — the same
+dispatch as a plain function you call inside your own message list.
+
+> **Approvals.** agentwire's `approval` kind marks the tool `needsApproval`, so
+> its server `execute` only runs after the traveler approves. The AI SDK puts the
+> call into the `approval-requested` state; `<AgentMessages>` auto-detects it,
+> renders Approve/Deny, and answers with `addToolApprovalResponse`. `useAgentChat`
+> auto-continues the turn once the response is recorded.
+
+## 6. Keep a real form in sync (the bridge)
+
+Say you also show a persistent "Passenger" panel with a `react-hook-form`. Let
+Atlas read and pre-fill it with `getPassenger` / `updatePassenger` `client` tools
+bridged to the form.
+
+```ts title="lib/tools.ts (add)"
+export const getPassenger = defineTool.client({
+  name: "getPassenger",
+  description: "Read the current passenger panel values.",
+  label: "Reading passenger",
+  inputSchema: z.object({ formId: z.string() }),
+});
+
+export const updatePassenger = defineTool.client({
+  name: "updatePassenger",
+  description: "Set one field in the passenger panel.",
+  label: "Updating passenger",
+  inputSchema: z.object({ formId: z.string(), path: z.string(), value: z.string() }),
+});
+```
+
+```tsx title="components/passenger-panel.tsx"
+"use client";
+
+import { useFormBridge } from "@kovenlabs/agentwire-react";
+import { useForm } from "react-hook-form";
+import { events, type PassengerValues } from "@/lib/events";
+
+export function PassengerPanel() {
+  const form = useForm<PassengerValues>();
+
+  useFormBridge({
+    adapter: {
+      getValues: () => form.getValues(),
+      setValue: (path, value) => form.setValue(path as keyof PassengerValues, value as string, { shouldDirty: true }),
+    },
+    channels: {
+      request: events.passengerRequest,
+      current: events.passengerCurrent,
+      update: events.passengerUpdate,
+    },
+    match: (p) => (p as { formId?: string }).formId === "passenger",
+    toCurrent: (values) => ({ formId: "passenger", values: values as PassengerValues }),
+    toUpdate: (p) => ({ path: (p as { path: string }).path, value: (p as { value: unknown }).value }),
+  });
+
+  return <form>{/* fullName, passport, email inputs */}</form>;
+}
+```
+
+And resolve the two client tools in `useAgentChat`:
+
+```tsx title="components/atlas.tsx (toolHandlers, add)"
+import { requestVia, publishTo } from "@kovenlabs/agentwire";
+import { events } from "@/lib/events";
+
+getPassenger: async (call, addToolOutput) => {
+  const r = await requestVia(events.passengerRequest, events.passengerCurrent, { formId: "passenger" });
+  addToolOutput({
+    tool: "getPassenger",
+    toolCallId: call.toolCallId,
+    output: r.ok ? r.value.values : { error: "panel not open" },
+  });
+},
+updatePassenger: (call, addToolOutput) => {
+  const { path, value } = call.input as { path: string; value: string };
+  publishTo(events.passengerUpdate, { formId: "passenger", path, value });
+  addToolOutput({ tool: "updatePassenger", toolCallId: call.toolCallId, output: { ok: true } });
+},
+```
+
+## 7. React to server results (optional polish)
+
+When `searchFlights` finishes, you might want to drop a pin on a map beside the
+chat. Subscribe to its result channel:
+
+```tsx title="components/flight-map.tsx"
+"use client";
+
+import { toolResultChannel } from "@kovenlabs/agentwire";
+import { useSubscribe } from "@kovenlabs/agentwire-react";
+
+export function FlightMap() {
+  useSubscribe(toolResultChannel("searchFlights"), (flights) => {
+    // flights is searchFlights' return value — render routes on the map
+  });
+  return <Map />;
+}
+```
+
+## What you exercised
+
+| Tool | Kind | Settled by |
+| --- | --- | --- |
+| `searchFlights` | server | AI SDK (+ `tool:searchFlights:result` on the bus) |
+| `pickFlight` | interactive | gallery → `INTERACTIVE_RESOLVE_CHANNEL` |
+| `collectPassenger` | interactive | form → `INTERACTIVE_RESOLVE_CHANNEL` |
+| `bookFlight` | approval | Approve/Deny card |
+| `showToast`, `navigate` | client | your `toolHandlers` |
+| `getPassenger`, `updatePassenger` | client + bridge | `useFormBridge` over the bus |
+
+That's every moving part of agentwire in one app. Next: the
+[Concepts](/docs/concepts) page for the model behind it, or
+[Interactive tools](/docs/interactive-tools) for the deferred pattern in depth.

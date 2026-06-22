@@ -1,0 +1,107 @@
+---
+title: "@kovenlabs/agentwire-react"
+description: Generic React hooks over the bus — subscribe, request, and form bridging.
+---
+
+```bash
+pnpm add @kovenlabs/agentwire-react
+```
+
+Peer dependency: `react` (^18 || ^19). These hooks are framework-agnostic over
+your LLM SDK — they only touch the bus.
+
+## Exports
+
+| Export | Kind | Summary |
+| --- | --- | --- |
+| [`useSubscribe`](#usesubscribe) | hook | subscribe to a channel for the component's lifetime |
+| [`useRequest`](#userequest) | hook | a stable request/reply function |
+| [`useFormBridge`](#useformbridge) | hook | bridge a form panel to agent read/update tools |
+| [`FormBridgeAdapter`](#useformbridge) | type | the `{ getValues, setValue }` shim |
+| [`UseFormBridgeOptions`](#options) | type | `useFormBridge` options |
+
+> `useSubscribe` is the one deep primitive here. The AI-SDK hooks
+> ([`useInteractiveResult`](/docs/ai-sdk#consuming-a-resolution-off-chat--useinteractiveresult),
+> [`useToolResult`](/docs/ai-sdk#consuming-a-server-tools-result--usetoolresult)) and
+> `useFormBridge` are all thin adapters over it.
+
+## `useSubscribe`
+
+Subscribe to a channel for the component's lifetime. The handler is held in a ref,
+so an inline closure won't re-subscribe every render.
+
+```tsx
+import { toolResultChannel } from "@kovenlabs/agentwire";
+import { useSubscribe } from "@kovenlabs/agentwire-react";
+
+useSubscribe(toolResultChannel("searchFlights"), (flights) => {
+  // react to a server tool finishing
+});
+```
+
+## `useRequest`
+
+Returns a stable function that performs a typed request/reply round-trip.
+
+```tsx
+import { useRequest } from "@kovenlabs/agentwire-react";
+import { events } from "@/lib/events";
+
+const getPassenger = useRequest(events.passengerRequest, events.passengerCurrent, {
+  timeoutMs: 2000,
+});
+
+const result = await getPassenger({ formId: "passenger" });
+if (result.ok) {
+  // result.value.values
+}
+```
+
+## `useFormBridge`
+
+Bridges a form panel with an agent's "read current values" / "update a field"
+tools. On a request it replies with the form's values; on an update it sets a
+field. Pure frontend — the user still saves.
+
+It never imports a form library; you pass a 2-method adapter.
+
+```tsx
+import { useFormBridge } from "@kovenlabs/agentwire-react";
+import { useForm } from "react-hook-form";
+import { events, type PassengerValues } from "@/lib/events";
+
+function PassengerPanel() {
+  const form = useForm<PassengerValues>();
+
+  useFormBridge({
+    adapter: {
+      getValues: () => form.getValues(),
+      setValue: (path, value) =>
+        form.setValue(path as keyof PassengerValues, value as string, { shouldDirty: true }),
+    },
+    channels: {
+      request: events.passengerRequest,
+      current: events.passengerCurrent,
+      update: events.passengerUpdate,
+    },
+    // when several panels are mounted, only respond to your own:
+    match: (p) => (p as { formId?: string }).formId === "passenger",
+    toCurrent: (values) => ({ formId: "passenger", values: values as PassengerValues }),
+    toUpdate: (p) => ({ path: (p as { path: string }).path, value: (p as { value: unknown }).value }),
+  });
+
+  return <form>{/* … */}</form>;
+}
+```
+
+### Options
+
+| Field | Purpose |
+| --- | --- |
+| `adapter` | `{ getValues(), setValue(path, value) }` over your form. |
+| `channels.request` | Agent asks for current values. |
+| `channels.current` | This panel replies with current values. |
+| `channels.update` | Agent pushes a field update. |
+| `match?` | Return `true` if a request/update targets this panel instance. Defaults to always. |
+| `toCurrent` | Build the reply payload from current form values. |
+| `toUpdate` | Extract `{ path, value }` to set from an update payload. |

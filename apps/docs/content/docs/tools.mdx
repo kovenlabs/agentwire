@@ -1,0 +1,122 @@
+---
+title: "@kovenlabs/agentwire-tools"
+description: The defineTool factory and the tool registry.
+---
+
+```bash
+pnpm add @kovenlabs/agentwire-tools
+```
+
+Tool inputs are typed via [Standard Schema](https://standardschema.dev), so any
+compliant validator works — Zod, Valibot, ArkType. The examples use Zod.
+
+## Exports
+
+| Export | Kind | Summary |
+| --- | --- | --- |
+| [`defineTool.server`](#definetoolserver) | fn | tool that runs `execute` on the server |
+| [`defineTool.approval`](#definetoolapproval) | fn | server tool gated behind approve/deny |
+| [`defineTool.client`](#definetoolclient) | fn | tool resolved by your client handlers |
+| [`defineTool.interactive`](#definetoolinteractive) | fn | tool deferred to UI, settled via the bus |
+| [`AgentToolDefinition`](#the-definition-shape) | type | the neutral definition `defineTool.*` returns |
+| [`ToolKind`](#the-definition-shape) | type | `"server" \| "approval" \| "client" \| "interactive"` |
+| [`ToolDisplay`](#the-definition-shape) | type | `{ label, description? }` |
+| [`getToolKind`](#registry) | fn | look up a tool's kind by name |
+| [`getToolDisplay`](#registry) | fn | look up a tool's label/description |
+| [`getInteractiveToolNames`](#registry) | fn | names of all `interactive` tools |
+| [`registerTool`](#registry) | fn | low-level registry write |
+| [`_resetRegistryForTesting`](#registry) | fn | clear the registry (tests) |
+
+## `defineTool`
+
+Each method produces a neutral `AgentToolDefinition` **and** registers the tool's
+kind + display in the [registry](#registry).
+
+### `defineTool.server`
+
+Runs on the server; the result is returned to the model.
+
+```ts
+import { defineTool } from "@kovenlabs/agentwire-tools";
+import { z } from "zod";
+
+export const searchFlights = defineTool.server({
+  name: "searchFlights",
+  description: "Search available flights between two cities on a date.",
+  label: "Searching flights",
+  inputSchema: z.object({ from: z.string(), to: z.string(), date: z.string() }),
+  execute: async ({ from, to, date }) => flightsApi.search({ from, to, date }),
+});
+```
+
+### `defineTool.approval`
+
+A server tool gated behind approve/deny. `approvalDescription` (falling back to
+`description`) is the sentence shown on the approval card.
+
+```ts
+export const bookFlight = defineTool.approval({
+  name: "bookFlight",
+  description: "Book the selected flight and charge the traveler's card.",
+  approvalDescription: "This charges your card and books the flight. Refunds may incur a fee.",
+  label: "Booking flight",
+  inputSchema: z.object({ flightId: z.string(), passengerId: z.string() }),
+  execute: ({ flightId, passengerId }) => bookingApi.book(flightId, passengerId),
+});
+```
+
+### `defineTool.client`
+
+No `execute` — you resolve it in `useAgentChat`'s `toolHandlers`.
+
+```ts
+export const navigate = defineTool.client({
+  name: "navigate",
+  description: "Navigate the traveler to a screen, e.g. /trips.",
+  label: "Navigating",
+  inputSchema: z.object({ to: z.string() }),
+});
+```
+
+### `defineTool.interactive`
+
+No `execute` — deferred to the UI and settled via the bus. See
+[Interactive tools](/docs/interactive-tools).
+
+```ts
+export const pickFlight = defineTool.interactive({
+  name: "pickFlight",
+  description: "Show the traveler the flights and let them choose one.",
+  label: "Choosing a flight",
+  inputSchema: z.object({
+    options: z.array(z.object({ id: z.string(), airline: z.string(), price: z.number() })),
+  }),
+});
+```
+
+## The definition shape
+
+```ts
+interface AgentToolDefinition<S> {
+  name: string;
+  kind: "server" | "approval" | "client" | "interactive";
+  description: string;
+  inputSchema: S;
+  execute?: (input: InferredInput) => Promise<unknown> | unknown; // server/approval only
+  needsApproval?: boolean;
+  display: { label: string; description?: string };
+}
+```
+
+Pass these to [`toAiToolSet`](/docs/ai-sdk#toaitoolset) to get AI SDK tools.
+
+## Registry
+
+Populated as a side effect of `defineTool.*`. Lets the UI and chat runtime look a
+tool up by name without importing its module.
+
+- `getToolKind(name)` → the registered kind, or `undefined`.
+- `getToolDisplay(name)` → `{ label, description? }`, falling back to `{ label: name }`.
+- `getInteractiveToolNames()` → names of every tool registered as `interactive`.
+  `useAgentChat` uses this to auto-detect interactive tools.
+- `registerTool(name, meta)` / `_resetRegistryForTesting()` — lower-level escape hatches.

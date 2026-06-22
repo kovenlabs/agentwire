@@ -1,0 +1,160 @@
+---
+title: "@kovenlabs/agentwire"
+description: The zero-dependency core — bus, channels, interactive primitives, logging seams.
+---
+
+```bash
+pnpm add @kovenlabs/agentwire
+```
+
+Zero runtime dependencies. Safe to import on the server or the client.
+
+## Exports
+
+| Export | Kind | Summary |
+| --- | --- | --- |
+| [`publish`](#publish) | fn | broadcast a payload on a channel (by name) |
+| [`subscribe`](#subscribe) | fn | listen on a channel; returns unsubscribe |
+| [`request`](#request) | fn | request/reply with timeout |
+| [`_resetForTesting`](#_resetfortesting) | fn | clear all channels (tests) |
+| [`RequestOptions`](#request) | type | `{ timeoutMs?, filter? }` |
+| [`RequestResult`](#request) | type | `{ ok: true; value } \| { ok: false }` |
+| [`chan`](#chan) | fn | declare a typed channel token |
+| [`defineChannels`](#definechannels) | fn | group channel tokens, preserving types |
+| [`toolResultChannel`](#toolresultchannel) | fn | the `tool:<name>:result` channel |
+| [`publishTo`](#typed-wrappers) | fn | typed `publish` over a token |
+| [`subscribeTo`](#typed-wrappers) | fn | typed `subscribe` over a token |
+| [`requestVia`](#typed-wrappers) | fn | typed `request` over tokens |
+| [`Channel`](#chan) | type | a typed channel token |
+| [`PayloadOf`](#payloadof) | type | extract a channel's payload type |
+| [`CHAT_ABOUT_THIS_REASON`](#interactive-primitives) | const | default interrupt reason |
+| [`isCompletedOutput`](#interactive-primitives) | fn | guard for `status: "completed"` |
+| [`isInterruptedOutput`](#interactive-primitives) | fn | guard for `status: "interrupted"` |
+| [`CompletedOutputBase`](#interactive-primitives) | type | completed output discriminant |
+| [`InterruptedOutputBase`](#interactive-primitives) | type | interrupted output discriminant |
+| [`InteractiveResolvePayload`](#interactive-primitives) | type | `{ tool, toolCallId, output }` |
+| [`noopLogger`](#logging) / [`consoleLogger`](#logging) | const | logger defaults |
+| [`noopTelemetry`](#logging) | const | telemetry default |
+| [`serializeError`](#logging) | fn | error → log-safe string |
+| [`AgentLogger`](#logging) / [`AgentLogContext`](#logging) | type | logging interface |
+| [`AgentTelemetry`](#logging) / [`AgentTelemetryEvent`](#logging) | type | telemetry interface |
+
+## The bus
+
+### `publish`
+
+`publish<P>(channel: string, payload: P): void` — broadcast `payload` to every
+subscriber currently on `channel`. No-op if there are none. Handlers run
+synchronously, in registration order, over a snapshot of the subscriber set (so a
+handler may (un)subscribe during dispatch).
+
+### `subscribe`
+
+`subscribe<P>(channel: string, handler: (p: P) => void): () => void` — listen on
+`channel`. Returns an unsubscribe function.
+
+### `request`
+
+`request<R, P>(requestChannel, replyChannel, payload, opts?)` — publish on
+`requestChannel`, resolve with the first reply on `replyChannel` that passes the
+optional `filter`. Resolves `{ ok: false }` after `opts.timeoutMs` (default `2000`).
+
+```ts
+type RequestResult<R> = { ok: true; value: R } | { ok: false };
+
+interface RequestOptions<R> {
+  timeoutMs?: number;
+  filter?: (reply: R) => boolean; // non-matching replies are ignored, not consumed
+}
+```
+
+### `_resetForTesting`
+
+`_resetForTesting(): void` — clears every channel and subscriber. Test-only.
+
+## Typed channels
+
+Prefer these over the raw string bus — the `Channel<P>` token carries the payload
+type so publish/subscribe/request are type-checked.
+
+### `chan`
+
+`chan<P>(name): Channel<P>` — declare a typed channel token. `P` is carried at the
+type level only.
+
+### `defineChannels`
+
+`defineChannels(map): map` — identity helper that preserves literal types; group
+your channel tokens (the typed replacement for a hand-maintained constants object).
+
+```ts
+import { chan, defineChannels } from "@kovenlabs/agentwire";
+
+export const events = defineChannels({
+  request: chan<{ version: string }>("page:request"),
+  reply: chan<{ values: number }>("page:reply"),
+});
+```
+
+### `toolResultChannel`
+
+`toolResultChannel(toolName): Channel<unknown>` — the conventional channel a
+server tool's result is published on: `tool:<toolName>:result`.
+
+### Typed wrappers
+
+`publishTo` / `subscribeTo` / `requestVia` mirror `publish` / `subscribe` /
+`request` but take channel tokens and enforce the payload type.
+
+```ts
+import { chan, publishTo, subscribeTo, requestVia } from "@kovenlabs/agentwire";
+
+const ping = chan<{ n: number }>("ping");
+const pong = chan<{ n: number }>("pong");
+
+subscribeTo(ping, (p) => p.n); // p: { n: number }
+publishTo(ping, { n: 1 });
+const reply = await requestVia(ping, pong, { n: 1 }); // RequestResult<{ n: number }>
+```
+
+### `PayloadOf`
+
+`PayloadOf<C>` — type helper: extract the payload type from a `Channel`.
+
+## Interactive primitives
+
+Generic building blocks for deferred tools (an app supplies its own tool-name
+union and per-tool output shapes).
+
+- `CHAT_ABOUT_THIS_REASON` — default reason for a "user bailed to chat" interrupt.
+- `InteractiveResolvePayload<TName, TOutput>` — `{ tool, toolCallId, output }`, the
+  payload published to settle a call.
+- `CompletedOutputBase` / `InterruptedOutputBase` — discriminated bases for
+  `status: "completed" | "interrupted"` outputs.
+- `isCompletedOutput(output)` / `isInterruptedOutput(output, reason?)` — guards.
+
+```ts
+import { isInterruptedOutput, CHAT_ABOUT_THIS_REASON } from "@kovenlabs/agentwire";
+
+if (isInterruptedOutput(output, CHAT_ABOUT_THIS_REASON)) {
+  // the user chose to chat instead of answering
+}
+```
+
+## Logging
+
+The library ships no concrete logger. Implement the interface, or use a default.
+
+```ts
+interface AgentLogger {
+  info(message: string, context?: AgentLogContext): void; // AgentLogContext = Record<string, unknown>
+  error(message: string, context?: AgentLogContext): void;
+}
+
+interface AgentTelemetry {
+  capture(event: AgentTelemetryEvent): void; // { tool, toolCallId, outcome, durationMs, … }
+}
+```
+
+Provided implementations: `noopLogger`, `consoleLogger`, `noopTelemetry`.
+`serializeError(error)` turns any thrown value into a log-safe string.

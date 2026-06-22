@@ -1,0 +1,198 @@
+---
+title: Getting Started
+description: Install agentwire and wire an agent-to-UI flow end to end.
+---
+
+This guide takes you from zero to a working agent that runs a server tool, asks
+the user to pick something, and pushes updates into your UI — using the Vercel AI
+SDK. We'll use a small slice of a **flight-booking assistant**; the
+[full example](/docs/full-example) builds the whole thing.
+
+## Install
+
+<Tabs items={["pnpm", "npm", "yarn"]}>
+  <Tab value="pnpm">
+    ```bash
+    pnpm add @kovenlabs/agentwire @kovenlabs/agentwire-tools @kovenlabs/agentwire-react @kovenlabs/agentwire-ai-sdk
+    ```
+  </Tab>
+  <Tab value="npm">
+    ```bash
+    npm install @kovenlabs/agentwire @kovenlabs/agentwire-tools @kovenlabs/agentwire-react @kovenlabs/agentwire-ai-sdk
+    ```
+  </Tab>
+  <Tab value="yarn">
+    ```bash
+    yarn add @kovenlabs/agentwire @kovenlabs/agentwire-tools @kovenlabs/agentwire-react @kovenlabs/agentwire-ai-sdk
+    ```
+  </Tab>
+</Tabs>
+
+The AI SDK adapter expects these peers in your app:
+
+```bash
+pnpm add ai @ai-sdk/react zod
+```
+
+> Only install `@kovenlabs/agentwire-ai-sdk` if you use the Vercel AI SDK. The core,
+> tools, and react packages have no LLM-SDK dependency.
+
+## 1. Declare your tools
+
+One `defineTool.*` call produces the tool definition **and** registers its kind +
+display, so the UI and the chat runtime can look it up by name.
+
+```ts title="lib/tools.ts"
+import { defineTool } from "@kovenlabs/agentwire-tools";
+import { z } from "zod";
+import { flightsApi } from "@/lib/api";
+
+// Runs on the server; its result is returned to the model automatically.
+export const searchFlights = defineTool.server({
+  name: "searchFlights",
+  description: "Search available flights between two cities on a date.",
+  label: "Searching flights",
+  inputSchema: z.object({ from: z.string(), to: z.string(), date: z.string() }),
+  execute: async ({ from, to, date }) => flightsApi.search({ from, to, date }),
+});
+
+// Deferred to the UI: renders a gallery, waits for a pick, then settles.
+export const pickFlight = defineTool.interactive({
+  name: "pickFlight",
+  description: "Show the traveler the flights and let them choose one.",
+  label: "Choosing a flight",
+  inputSchema: z.object({
+    options: z.array(z.object({ id: z.string(), airline: z.string(), price: z.number() })),
+  }),
+});
+
+export const tools = { searchFlights, pickFlight };
+```
+
+There are four kinds:
+
+| Kind | `execute`? | Settled by |
+| --- | --- | --- |
+| `server` | yes | the AI SDK (result returned to the model) |
+| `approval` | yes | an approve/deny step, then the server |
+| `client` | no | your `toolHandlers` on the client |
+| `interactive` | no | the UI publishing a result on the bus |
+
+## 2. Wire the server route
+
+Convert your neutral tool definitions into AI SDK tools with `toAiToolSet`, then
+hand them to `streamText`.
+
+```ts title="app/api/agent/chat/route.ts"
+import { toAiToolSet } from "@kovenlabs/agentwire-ai-sdk";
+import { consoleLogger } from "@kovenlabs/agentwire";
+import { convertToModelMessages, streamText } from "ai";
+import { openai } from "@ai-sdk/openai";
+import { tools } from "@/lib/tools";
+
+export async function POST(req: Request) {
+  const { messages, chatId, agent } = await req.json();
+
+  const result = streamText({
+    model: openai("gpt-5"),
+    messages: convertToModelMessages(messages),
+    tools: toAiToolSet(tools, { logger: consoleLogger }),
+    experimental_context: { chatId, agent },
+  });
+
+  return result.toUIMessageStreamResponse();
+}
+```
+
+`toAiTool`/`toAiToolSet` wrap each tool's `execute` with start/finish/fail
+logging via the injected logger — swap `consoleLogger` for your own
+[`AgentLogger`](/docs/core#logging).
+
+## 3. Wire the chat on the client
+
+`useAgentChat` is the runtime: it connects the AI SDK's `useChat` to the bus,
+settles interactive tools, dispatches client tools to your handlers, and
+publishes `tool:<name>:result` when server tools complete.
+
+```tsx title="components/atlas.tsx"
+"use client";
+
+import { useAgentChat } from "@kovenlabs/agentwire-ai-sdk/react";
+import { useRouter } from "next/navigation";
+
+export function Atlas({ chatId }: { chatId: string }) {
+  const router = useRouter();
+
+  const chat = useAgentChat({
+    chatId,
+    agent: "atlas",
+    interactiveTools: ["pickFlight"], // or omit — auto-detected from the registry
+    toolHandlers: {
+      // a "client" tool you resolve yourself
+      navigate: (call, addToolOutput) => {
+        router.push((call.input as { to: string }).to);
+        addToolOutput({ tool: "navigate", toolCallId: call.toolCallId, output: { ok: true } });
+      },
+    },
+  });
+
+  // chat.messages, chat.sendMessage, chat.status … (standard AI SDK useChat API)
+  return <MessageList messages={chat.messages} />;
+}
+```
+
+## 4. Settle the interactive tool from your UI
+
+When the agent calls `pickFlight`, the call stays open. Render your gallery, and
+when the traveler taps a flight, publish the choice on the resolve channel — the
+runtime calls `addToolOutput` for you and the agent continues.
+
+```tsx title="components/flight-gallery.tsx"
+"use client";
+
+import { completeInteractive } from "@kovenlabs/agentwire-ai-sdk/react";
+
+export function FlightGallery({
+  toolCallId,
+  options,
+}: {
+  toolCallId: string;
+  options: Array<{ id: string; airline: string; price: number }>;
+}) {
+  function choose(flightId: string) {
+    completeInteractive("pickFlight", toolCallId, { flightId });
+  }
+
+  return options.map((f) => (
+    <button key={f.id} onClick={() => choose(f.id)}>
+      {f.airline} — ${f.price}
+    </button>
+  ));
+}
+```
+
+> Render this from the stream with [`<AgentMessages>`](/docs/ai-sdk#rendering--agentmessages) —
+> map `pickFlight` to `FlightGallery` and it mounts automatically.
+
+## 5. (Optional) React to server tool results
+
+Server tools auto-publish on `tool:<name>:result`. Subscribe with the React hook
+to refresh UI when, say, flights come back.
+
+```tsx title="components/flight-map.tsx"
+"use client";
+
+import { toolResultChannel } from "@kovenlabs/agentwire";
+import { useSubscribe } from "@kovenlabs/agentwire-react";
+
+export function FlightMap() {
+  useSubscribe(toolResultChannel("searchFlights"), (flights) => {
+    // re-render the map with the returned routes
+  });
+  return <Map />;
+}
+```
+
+That's the core loop. Build the complete assistant — approvals, a passenger form,
+the form bridge — in the [full example](/docs/full-example), or read
+[Concepts](/docs/concepts) for the model behind it.

@@ -1,0 +1,43 @@
+{
+  "name": "@kovenlabs/agentwire",
+  "version": "0.1.0",
+  "description": "Zero-dependency typed pub/sub event bus for agent tools, with channel registry and interactive-tool primitives.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist .turbo"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kovenlabs/agentwire.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/kovenlabs/agentwire#readme",
+  "bugs": "https://github.com/kovenlabs/agentwire/issues"
+}
